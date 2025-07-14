@@ -31,9 +31,10 @@ public class WordLookUp extends JFrame {
                     if (currentText != null && !currentText.equals(lastText) && currentText.trim().length() > 0) {
                         String cleanedText = currentText.trim().replaceAll("[^a-zA-Z\\s]", "").toLowerCase();
                         if (cleanedText.length() > 0 && cleanedText.split("\\s+").length == 1) {
-                            System.out.println("Looking up word: " + cleanedText);
+                            String definition = getDefinition(cleanedText);
                             scheduler.execute(() -> {
-                                String definition = getDefinition(cleanedText);
+                                String meaningOnly = definition.split("<br><br>")[0];
+                                System.out.println("Looking up for word : " + cleanedText + "->" + " " + meaningOnly);
                                 if (definition != null && !definition.isEmpty()) {
                                     SwingUtilities.invokeLater(() -> showPopUp(cleanedText, definition));
                                 }
