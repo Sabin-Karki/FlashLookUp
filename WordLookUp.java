@@ -1,42 +1,60 @@
+import javax.sound.sampled.*;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+// Import JavaZOOM libraries for MP3 support
+
+import javazoom.jl.player.Player;
+import javazoom.jl.player.advanced.AdvancedPlayer;
 
 public class WordLookUp extends JFrame {
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
     private static JWindow currentPopup = null;
+    private static Player currentPlayer = null; // For MP3 playback control
+    
+    static class WordData {
+        String definition;
+        String audioUrl;
+        
+        WordData(String definition, String audioUrl) {
+            this.definition = definition;
+            this.audioUrl = audioUrl;
+        }
+    }
     
     public static void main(String[] args) {
-        System.out.println("WordLookUp started. Copy a single word to see definition popup.");
+        System.out.println("WordLookUp started with MP3 support. Copy a single word to see definition popup.");
         System.out.println("Press Ctrl+C to exit.");
         
         Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
         
         Thread monitorClipboard = new Thread(() -> {
-            String lastText = ""; //get last text so it wont keep checking same word again and again
+            String lastText = "";
             while (true) {
                 try {
-                    String currentText = (String) clipboard.getData(DataFlavor.stringFlavor); //this makes sure to check for text/string only from the system clipboard;
+                    String currentText = (String) clipboard.getData(DataFlavor.stringFlavor);
                     
-                    //check something new being copied
                     if (currentText != null && !currentText.equals(lastText) && currentText.trim().length() > 0) {
                         String cleanedText = currentText.trim().replaceAll("[^a-zA-Z\\s]", "").toLowerCase();
                         if (cleanedText.length() > 0 && cleanedText.split("\\s+").length == 1) {
-                            String definition = getDefinition(cleanedText);
+                            WordData wordData = getDefinition(cleanedText);
                             scheduler.execute(() -> {
-                                String meaningOnly = definition.split("<br><br>")[0];
+                                String meaningOnly = wordData.definition.split("<br><br>")[0];
                                 System.out.println("Looking up for word : " + cleanedText + "->" + " " + meaningOnly);
-                                if (definition != null && !definition.isEmpty()) {
-                                    SwingUtilities.invokeLater(() -> showPopUp(cleanedText, definition));
+                                if (wordData.definition != null && !wordData.definition.isEmpty()) {
+                                    SwingUtilities.invokeLater(() -> 
+                                        showPopUp(cleanedText, wordData.definition, wordData.audioUrl));
                                 }
                             });
                         } else {
@@ -59,7 +77,6 @@ public class WordLookUp extends JFrame {
         
         monitorClipboard.start();
         
-        // Keep main thread alive
         try {
             monitorClipboard.join();
         } catch (InterruptedException e) {
@@ -67,6 +84,9 @@ public class WordLookUp extends JFrame {
         }
         
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (currentPlayer != null) {
+                currentPlayer.close();
+            }
             scheduler.shutdown();
             try {
                 if (!scheduler.awaitTermination(2, TimeUnit.SECONDS)) {
@@ -78,10 +98,7 @@ public class WordLookUp extends JFrame {
         }));
     }
     
-    public static String getDefinition(String word) {
-        //this method is for implementing logic to fetch meaning of the word
-        //using api
-        //first open connection
+    public static WordData getDefinition(String word) {
         HttpURLConnection connection = null;
         BufferedReader reader = null;
         try {
@@ -95,10 +112,9 @@ public class WordLookUp extends JFrame {
             
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
-                return "Word not found.";
+                return new WordData("Word not found.", null);
             }
             
-            // have to read response now
             reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
             String line;
             StringBuilder response = new StringBuilder();
@@ -109,26 +125,28 @@ public class WordLookUp extends JFrame {
             
             String jsonResponse = response.toString();
             if (jsonResponse.contains("title") && jsonResponse.contains("Not Found")) {
-                return "Word not found.";
+                return new WordData("Word not found.", null);
             }
             
-            //parsing logic for accurate format
             String definition = parseDefinition(jsonResponse);
             String example = parseExample(jsonResponse);
+            String audioUrl = parseAudio(jsonResponse);
+            
+            System.out.println("Audio URL found: " + (audioUrl != null ? audioUrl : "None"));
             
             if (definition != null) {
                 StringBuilder result = new StringBuilder(definition);
                 if (example != null && !example.isEmpty()) {
                     result.append("<br><br><i>Example: ").append(example).append("</i>");
                 }
-                return result.toString();
+                return new WordData(result.toString(), audioUrl);
             } else {
-                return "Definition not found";
+                return new WordData("Definition not found", null);
             }
             
         } catch (Exception e) {
-            System.out.println("Definition not found" + e.getMessage());
-            return "Definition not found";
+            System.out.println("Definition not found: " + e.getMessage());
+            return new WordData("Definition not found", null);
         } finally {
             if (reader != null) {
                 try {
@@ -168,8 +186,143 @@ public class WordLookUp extends JFrame {
         example = example.replace("\\n", " ").replace("\\", "");
         return example.length() > 150 ? example.substring(0, 150) + "..." : example;
     }
+
+    private static String parseAudio(String jsonResponse) {
+        Pattern audioPattern = Pattern.compile("\"audio\":\"([^\"]+)\"");
+        Matcher matcher = audioPattern.matcher(jsonResponse);
+        
+        while (matcher.find()) {
+            String audioUrl = matcher.group(1);
+            audioUrl = audioUrl.replace("\\", "");
+            
+            if (!audioUrl.isEmpty()) {
+                if (!audioUrl.startsWith("http")) {
+                    audioUrl = "https:" + audioUrl;
+                }
+                return audioUrl;
+            }
+        }
+        
+        return null;
+    }
+
+    // FIXED: MP3 streaming support with JavaZOOM (NO DISK USAGE)
+    public static void playPronunciation(String audioUrl) {
+        if (audioUrl == null || audioUrl.isEmpty()) {
+            System.out.println("No audio URL available");
+            return;
+        }
+        
+        System.out.println("Streaming MP3 audio from: " + audioUrl);
+        
+        // Stop any currently playing audio
+        if (currentPlayer != null) {
+            currentPlayer.close();
+            currentPlayer = null;
+        }
+        
+        try {
+            URL url = new URL(audioUrl);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestProperty("User-Agent", "WordLookUp/1.0");
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(10000);
+            
+            if (connection.getResponseCode() != 200) {
+                System.out.println("Failed to access audio: HTTP " + connection.getResponseCode());
+                return;
+            }
+            
+            // Check if it's MP3 or try JavaZOOM first
+            String contentType = connection.getContentType();
+            System.out.println("Audio content type: " + contentType);
+            
+            InputStream inputStream = connection.getInputStream();
+            BufferedInputStream bufferedStream = new BufferedInputStream(inputStream);
+            
+            // Try JavaZOOM MP3 player first (supports MP3 streaming)
+            try {
+                currentPlayer = new Player(bufferedStream);
+                
+                // Play in separate thread to avoid blocking
+                new Thread(() -> {
+                    try {
+                        currentPlayer.play();
+                        System.out.println("MP3 audio played successfully (streamed from RAM)");
+                    } catch (Exception e) {
+                        System.out.println("MP3 playback failed: " + e.getMessage());
+                        
+                        // Fallback to Java's built-in audio system for WAV files
+                        tryBuiltinAudioSystem(audioUrl);
+                    } finally {
+                        currentPlayer = null;
+                        try {
+                            bufferedStream.close();
+                            inputStream.close();
+                        } catch (Exception e) {
+                            // ignore
+                        }
+                    }
+                }).start();
+                
+            } catch (Exception e) {
+                System.out.println("JavaZOOM MP3 player failed: " + e.getMessage());
+                
+                // Fallback to built-in audio system
+                tryBuiltinAudioSystem(audioUrl);
+            }
+            
+        } catch (Exception e) {
+            System.out.println("Could not stream audio: " + e.getMessage());
+        }
+    }
     
-    public static void showPopUp(String word, String definition) {
+    // Fallback method using Java's built-in audio system (for WAV files)
+    private static void tryBuiltinAudioSystem(String audioUrl) {
+        try {
+            URL url = new URL(audioUrl);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestProperty("User-Agent", "WordLookUp/1.0");
+            
+            InputStream inputStream = connection.getInputStream();
+            BufferedInputStream bufferedStream = new BufferedInputStream(inputStream);
+            
+            AudioInputStream audioInputStream = AudioSystem.getAudioInputStream(bufferedStream);
+            Clip clip = AudioSystem.getClip();
+            clip.open(audioInputStream);
+            clip.start();
+            
+            System.out.println("WAV audio played successfully (built-in system)");
+            
+            clip.addLineListener(event -> {
+                if (event.getType() == LineEvent.Type.STOP) {
+                    clip.close();
+                    try {
+                        audioInputStream.close();
+                        bufferedStream.close();
+                        inputStream.close();
+                    } catch (Exception e) {
+                        // ignore
+                    }
+                }
+            });
+            
+        } catch (UnsupportedAudioFileException e) {
+            System.out.println("Audio format not supported by built-in system: " + e.getMessage());
+        } catch (Exception e) {
+            System.out.println("Built-in audio system failed: " + e.getMessage());
+        }
+    }
+
+    private static JLabel createSpeakerIcon() {
+        JLabel speakerIcon = new JLabel("🔊");
+        speakerIcon.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 16));
+        speakerIcon.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        speakerIcon.setToolTipText("Click to hear pronunciation");
+        return speakerIcon;
+    }
+    
+    public static void showPopUp(String word, String definition, String audioUrl) {
         if (currentPopup != null) {
             currentPopup.dispose();
         }
@@ -184,15 +337,35 @@ public class WordLookUp extends JFrame {
             BorderFactory.createEmptyBorder(12, 12, 12, 12)
         ));
         
+        JPanel headerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        headerPanel.setBackground(new Color(248, 249, 250));
+        
         JLabel wordLabel = new JLabel(word.toUpperCase());
         wordLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
         wordLabel.setForeground(new Color(51, 51, 51));
+        
+        headerPanel.add(wordLabel);
+        
+        // Add speaker icon if audio URL is available
+        if (audioUrl != null && !audioUrl.isEmpty()) {
+            JLabel speakerIcon = createSpeakerIcon();
+            speakerIcon.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent evt) {
+                    scheduler.execute(() -> playPronunciation(audioUrl));
+                }
+            });
+            headerPanel.add(speakerIcon);
+            System.out.println("Speaker icon added for word: " + word);
+        } else {
+            System.out.println("No audio URL available for word: " + word);
+        }
         
         JLabel definitionLabel = new JLabel("<html>" + definition + "</html>");
         definitionLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
         definitionLabel.setForeground(new Color(85, 85, 85));
         
-        contentPanel.add(wordLabel, BorderLayout.NORTH);
+        contentPanel.add(headerPanel, BorderLayout.NORTH);
         contentPanel.add(definitionLabel, BorderLayout.CENTER);
         
         currentPopup.add(contentPanel, BorderLayout.CENTER);
@@ -210,7 +383,6 @@ public class WordLookUp extends JFrame {
         currentPopup.setLocation(x, y);
         currentPopup.setVisible(true);
         
-        // Auto-hide after 5 seconds
         scheduler.schedule(() -> {
             SwingUtilities.invokeLater(() -> {
                 if (currentPopup != null) {
