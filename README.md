@@ -47,10 +47,5 @@ java -cp "./*" WordLookUp
 
 Fork it, make it better, send a pull request. The code is pretty straightforward.
 
-## License
-
-MIT License - do whatever you want with it.
-
----
 
 *Uses the free Dictionary API and some Java audio libraries. No data collection, everything happens locally.*
