@@ -42,7 +42,6 @@ java -cp "./*" WordLookUp
 
 **No sound?** Some words don't have audio files. Also check your internet connection.
 
-**CPU usage high?** Yeah, that's normal - it's constantly watching your clipboard.
 
 ## Want to help?
 
