@@ -206,7 +206,7 @@ public class WordLookUp extends JFrame {
         return null;
     }
 
-    // FIXED: MP3 streaming support with JavaZOOM (NO DISK USAGE)
+    //  MP3 streaming support with JavaZOOM <this is done to not use any disk space and stream directly from RAM>
     public static void playPronunciation(String audioUrl) {
         if (audioUrl == null || audioUrl.isEmpty()) {
             System.out.println("No audio URL available");
